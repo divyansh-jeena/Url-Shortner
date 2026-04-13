@@ -4,11 +4,12 @@ target/
 # Logs
 *.log
 
-# Environment / Secrets
+# Secrets
 .env
 application.properties
+application.yml
 
-# IDE files
+# IDE
 .idea/
 .vscode/
 *.iml
