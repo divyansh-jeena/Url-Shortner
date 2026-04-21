@@ -5,22 +5,32 @@ import lombok.*;
 
 import java.time.LocalDateTime;
 
+
 @Entity
+@Builder
+@Table(name = "urls")
 @Getter
 @Setter
-@Builder
-@NoArgsConstructor
 @AllArgsConstructor
+@NoArgsConstructor
 public class Url {
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-   private  Long id;
+    private Long id;
+
+    @Column(nullable = false)
+    private String originalUrl;
+
+    @Column(unique = true)
     private String shortUrl;
-    @Column(columnDefinition = "TEXT")
-    private  String longUrl;
-    private  LocalDateTime createdAt;
-    private  LocalDateTime expiryTime;
-    private  int clickCount;
+
+    private Long clickCount = 0L;
+
+    private LocalDateTime createdAt = LocalDateTime.now();
+
+    private LocalDateTime expiryTime;
+
 
 
 

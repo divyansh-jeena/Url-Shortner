@@ -3,13 +3,15 @@ package com.example.url_shortner.Service;
 import com.example.url_shortner.Repository.UrlRepository;
 import com.example.url_shortner.dto.UrlResponse;
 import com.example.url_shortner.entity.Url;
+import com.example.url_shortner.util.Base62Util;
 import lombok.AllArgsConstructor;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 @Service
@@ -17,99 +19,107 @@ import java.util.concurrent.TimeUnit;
 public class UrlService {
 
     private final UrlRepository urlRepository;
-    private final RateLimiter rateLimiter;
     private final RedisTemplate<String, String> redisTemplate;
+    private final RateLimiter rateLimiter;
 
-    public String generateShortUrl() {
-        String chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        StringBuilder sb = new StringBuilder();
-        Random random = new Random();
 
-        for (int i = 0; i < 6; i++) {
-            sb.append(chars.charAt(random.nextInt(chars.length())));
-        }
-
-        return sb.toString();
-    }
     public UrlResponse create(String longUrl) {
 
-        if (longUrl == null || longUrl.isEmpty()) {
+        if (longUrl == null || longUrl.isBlank()) {
             throw new RuntimeException("Invalid URL");
         }
 
-        String shortUrl = generateShortUrl();
 
-        while (urlRepository.existsByShortUrl(shortUrl)) {
-            shortUrl = generateShortUrl();
-        }
+        Url url = new Url();
+        url.setOriginalUrl(longUrl);
+        url.setCreatedAt(LocalDateTime.now());
+        url.setExpiryTime(LocalDateTime.now().plusDays(7));
 
-        Url url = Url.builder()
-                .longUrl(longUrl)
-                .shortUrl(shortUrl)
-                .createdAt(LocalDateTime.now())
-                .expiryTime(LocalDateTime.now().plusDays(7))
-                .clickCount(0)
-                .build();
+        Url saved = urlRepository.save(url);
 
-        urlRepository.save(url);
 
-        return new UrlResponse(shortUrl, longUrl);
+        String shortCode = Base62Util.encode(saved.getId());
+
+
+        saved.setShortUrl(shortCode);
+        urlRepository.save(saved);
+
+        return new UrlResponse(shortCode, longUrl);
     }
+
+
     public String redirect(String shortUrl, String ip) {
 
         if (!rateLimiter.allowRequest(ip)) {
             throw new RuntimeException("Too many requests");
         }
 
-        if (shortUrl == null || shortUrl.isEmpty()) {
-            throw new IllegalArgumentException("Invalid URL");
-        }
-
         String longUrl = getLongUrl(shortUrl);
+
+
         incrementClick(shortUrl);
 
         return longUrl;
     }
+
+
     public String getLongUrl(String shortUrl) {
 
         String key = "url:" + shortUrl;
 
-        String cachedUrl = redisTemplate.opsForValue().get(key);
-        if (cachedUrl != null) {
-            return cachedUrl;
+        String cached = redisTemplate.opsForValue().get(key);
+        if (cached != null) {
+            return cached;
         }
-
-
         Url url = urlRepository.findByShortUrl(shortUrl)
                 .orElseThrow(() -> new RuntimeException("URL not found"));
 
         LocalDateTime now = LocalDateTime.now();
-        if (url.getExpiryTime() != null &&
-                url.getExpiryTime().isBefore(now)) {
+
+        if (url.getExpiryTime() != null && url.getExpiryTime().isBefore(now)) {
             throw new RuntimeException("Link expired");
         }
-        long ttl = Duration.between(now, url.getExpiryTime()).toSeconds();
 
-        if (ttl <= 0) {
-            throw new RuntimeException("Link expired");
+        String longUrl = url.getOriginalUrl();
+
+
+        if (url.getExpiryTime() != null) {
+            long ttl = Duration.between(now, url.getExpiryTime()).toSeconds();
+
+            if (ttl > 0) {
+                redisTemplate.opsForValue().set(key, longUrl, ttl, TimeUnit.SECONDS);
+            }
         }
-        redisTemplate.opsForValue().set(
-                key,
-                url.getLongUrl(),
-                ttl,
-                TimeUnit.SECONDS
-        );
 
-        return url.getLongUrl();
+        return longUrl;
     }
 
 
     public void incrementClick(String shortUrl) {
+        String key = "click:" + shortUrl;
+        redisTemplate.opsForValue().increment(key);
+    }
 
-        Url url = urlRepository.findByShortUrl(shortUrl)
-                .orElseThrow(() -> new RuntimeException("URL not found"));
+    @Scheduled(fixedRate = 60000)
+    public void syncClicks() {
 
-        url.setClickCount(url.getClickCount() + 1);
-        urlRepository.save(url);
+        Set<String> keys = redisTemplate.keys("click:*");
+
+        for (String key : keys) {
+
+            String shortUrl = key.replace("click:", "");
+            String countStr = redisTemplate.opsForValue().get(key);
+
+            if (countStr == null) continue;
+
+            long count = Long.parseLong(countStr);
+
+            urlRepository.findByShortUrl(shortUrl).ifPresent(url -> {
+                url.setClickCount(url.getClickCount() + count);
+                urlRepository.save(url);
+            });
+
+            redisTemplate.delete(key);
+        }
     }
 }
