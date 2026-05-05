@@ -105,6 +105,9 @@ public class UrlService {
 
         Set<String> keys = redisTemplate.keys("click:*");
 
+        // Bug fix: keys() can return null, causing NPE
+        if (keys == null || keys.isEmpty()) return;
+
         for (String key : keys) {
 
             String shortUrl = key.replace("click:", "");
